@@ -1,6 +1,7 @@
 
 from decimal import Decimal, InvalidOperation
-
+import logging
+import time
 from flask import Blueprint, request
 from sqlalchemy.exc import IntegrityError
 
@@ -13,6 +14,7 @@ webhook_bp = Blueprint("webhook", __name__)
 
 @webhook_bp.post("/v1/webhooks/transactions")
 def receive_transaction():
+    request_started = time.perf_counter()
     data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
@@ -116,12 +118,25 @@ def receive_transaction():
         db.session.add(transaction)
         db.session.add(job)
         db.session.commit()
+        logging.warning(
+     "Webhook timing: save and commit took %.2f ms",
+    (time.perf_counter() - db_check_started) * 1000,
+)
+        logging.warning(
+    "Webhook timing: total before response took %.2f ms",
+    (time.perf_counter() - request_started) * 1000,
+)
 
     except IntegrityError:
         db.session.rollback()
 
         # Another request may have inserted the same transaction concurrently.
         existing = db.session.get(Transaction, transaction_id)
+        db_check_started = time.perf_counter()
+        logging.warning(
+    "Webhook timing: initial DB lookup took %.2f ms",
+    (time.perf_counter() - db_check_started) * 1000,
+)
 
         if existing:
             return {
