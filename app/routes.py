@@ -1,7 +1,7 @@
 
 from decimal import Decimal, InvalidOperation
 import logging
-from flask import Blueprint, request
+from flask import Blueprint, Response, jsonify, request
 from sqlalchemy import literal, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -11,6 +11,191 @@ from app.models import Transaction, TransactionJob, utc_now
 
 
 webhook_bp = Blueprint("webhook", __name__)
+
+OPENAPI_SPEC = {
+    "openapi": "3.0.3",
+    "info": {
+        "title": "Transaction Webhook Service API",
+        "version": "1.0.0",
+        "description": (
+            "Accepts transaction webhooks and provides transaction status. "
+            "The background worker must be running to complete processing."
+        ),
+    },
+    "servers": [{"url": "/"}],
+    "paths": {
+        "/": {
+            "get": {
+                "summary": "Health check",
+                "responses": {
+                    "200": {
+                        "description": "Service is healthy",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "status": {"type": "string", "example": "HEALTHY"},
+                                        "current_time": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                        },
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        },
+        "/v1/webhooks/transactions": {
+            "post": {
+                "summary": "Submit a transaction webhook",
+                "description": (
+                    "Returns 202 after the transaction and job are persisted. "
+                    "Repeated transaction IDs are accepted without creating "
+                    "duplicate jobs."
+                ),
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/TransactionWebhook"},
+                            "example": {
+                                "transaction_id": "txn_abc123def456",
+                                "source_account": "acc_user_789",
+                                "destination_account": "acc_merchant_456",
+                                "amount": 1500,
+                                "currency": "INR",
+                            },
+                        }
+                    },
+                },
+                "responses": {
+                    "202": {
+                        "description": "Transaction accepted or already received",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {"type": "string"},
+                                        "transaction_id": {"type": "string"},
+                                        "status": {"type": "string"},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "400": {"description": "Invalid request body"},
+                    "500": {"description": "Could not save transaction"},
+                },
+            }
+        },
+        "/v1/transactions/{transaction_id}": {
+            "get": {
+                "summary": "Get transaction status",
+                "parameters": [
+                    {
+                        "name": "transaction_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Transaction details",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Transaction"
+                                }
+                            }
+                        },
+                    },
+                    "404": {"description": "Transaction not found"},
+                },
+            }
+        },
+    },
+    "components": {
+        "schemas": {
+            "TransactionWebhook": {
+                "type": "object",
+                "required": [
+                    "transaction_id",
+                    "source_account",
+                    "destination_account",
+                    "amount",
+                    "currency",
+                ],
+                "properties": {
+                    "transaction_id": {"type": "string", "example": "txn_abc123def456"},
+                    "source_account": {"type": "string", "example": "acc_user_789"},
+                    "destination_account": {
+                        "type": "string",
+                        "example": "acc_merchant_456",
+                    },
+                    "amount": {"type": "number", "exclusiveMinimum": 0, "example": 1500},
+                    "currency": {"type": "string", "minLength": 3, "maxLength": 3, "example": "INR"},
+                },
+            },
+            "Transaction": {
+                "type": "object",
+                "properties": {
+                    "transaction_id": {"type": "string"},
+                    "source_account": {"type": "string"},
+                    "destination_account": {"type": "string"},
+                    "amount": {"type": "string", "example": "1500.00"},
+                    "currency": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["PROCESSING", "PROCESSED"],
+                    },
+                    "created_at": {"type": "string", "format": "date-time"},
+                    "processed_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": True,
+                    },
+                },
+            },
+        }
+    },
+}
+
+
+@webhook_bp.get("/openapi.json")
+def openapi_spec():
+    return jsonify(OPENAPI_SPEC)
+
+
+@webhook_bp.get("/docs")
+def api_docs():
+    html = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Transaction Webhook Service API Docs</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css">
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
+    <script>
+      window.onload = () => SwaggerUIBundle({
+        url: "./openapi.json",
+        dom_id: "#swagger-ui",
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: "BaseLayout",
+        deepLinking: true
+      });
+    </script>
+  </body>
+</html>"""
+    return Response(html, mimetype="text/html")
 
 
 @webhook_bp.post("/v1/webhooks/transactions")
