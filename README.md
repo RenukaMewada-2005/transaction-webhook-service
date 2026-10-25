@@ -1,36 +1,36 @@
 # Transaction Webhook Service
 
-A Flask API that accepts transaction webhooks, persists transactions and
-processing jobs in PostgreSQL, and processes jobs asynchronously in a separate
-worker process.
+This is a small Flask service for receiving payment transaction webhooks. It
+saves each transaction to PostgreSQL and is designed to process it in the
+background, so the webhook request can return quickly.
 
-## Features
+## Live links
 
-- `POST /v1/webhooks/transactions` validates a webhook, stores it and its job,
-  then responds with `202 Accepted`.
-- Duplicate `transaction_id` values are accepted without creating a second
-  transaction or job.
-- The worker simulates external processing with a 30-second delay, then updates
-  the transaction status and processing timestamp.
-- `GET /v1/transactions/<transaction_id>` returns the stored transaction.
-- `GET /` is a health check.
-- `GET /docs` serves interactive Swagger UI for trying the API endpoints.
-- `GET /openapi.json` serves the OpenAPI specification used by Swagger UI.
+- **API:** <https://transaction-webhook-service-28y0.onrender.com/>
+- **Try the API in your browser:** <https://transaction-webhook-service-28y0.onrender.com/docs>
+- **GitHub repository:** <https://github.com/RenukaMewada-2005/transaction-webhook-service>
 
-The webhook handler performs its database insert as a single PostgreSQL
-statement. This reduces database round trips, but response time still depends
-on the network and database latency; the service cannot guarantee a sub-500 ms
-response under every deployment condition.
+## What the service does
 
-## Requirements
+- Accepts transactions at `POST /v1/webhooks/transactions` and returns
+  `202 Accepted` after saving them.
+- Prevents duplicate transactions when the same `transaction_id` is sent more
+  than once.
+- Lets you check a transaction with
+  `GET /v1/transactions/<transaction_id>`.
+- Provides a health check at `GET /`.
+- Provides interactive API documentation at `GET /docs`.
+- Includes a worker that waits 30 seconds to simulate processing, then marks a
+  transaction as `PROCESSED`.
 
-- Python 3.10 or newer
-- PostgreSQL
-- Dependencies listed in `requirements.txt`
+The webhook endpoint saves the transaction and its job with one PostgreSQL
+statement to reduce database round trips. Actual response time still depends
+on the database and network, so it may vary between deployments.
 
-## Run locally
+## Run it locally
 
-In PowerShell, from the repository root:
+You need Python 3.10 or newer and a PostgreSQL database. In PowerShell, open
+the project folder and install the dependencies:
 
 ```powershell
 py -m venv .venv
@@ -38,23 +38,23 @@ py -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Create a `.env` file in the repository root and set the connection string for
-your PostgreSQL database:
+Create a `.env` file in the project folder and add your PostgreSQL connection
+string:
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE
 ```
 
-Keep `.env` and database credentials private. Do not commit them to Git.
+Replace the example values with your own database details. Do not share or
+commit your `.env` file.
 
-Create the database tables before starting the API or worker. For local
-development, run:
+Create the database tables for local development:
 
 ```powershell
 python
 ```
 
-Then, in the Python prompt:
+At the Python prompt, run:
 
 ```python
 from app import create_app
@@ -65,41 +65,41 @@ with app.app_context():
     db.create_all()
 ```
 
-Exit the Python prompt with `exit()`. For production, create and update the
-schema through your database migration/deployment process rather than relying on
-`db.create_all()`.
+Then enter `exit()` to close the Python prompt. For a production deployment,
+use a database migration or deployment process to manage tables.
 
-Start the API in one PowerShell window:
+Start the API:
 
 ```powershell
 python .\run.py
 ```
 
-Start the background worker in a second window:
+To process transactions locally, open a second PowerShell window in the
+project folder and start the worker:
 
 ```powershell
 .\.venv\Scripts\python.exe -m app.worker
 ```
 
-Both processes need the same `DATABASE_URL`. The worker is a separate process;
-starting the API alone does not process queued transactions.
+Both the API and worker use the same `DATABASE_URL`. The API can accept and
+store webhooks without the worker, but transactions will not finish processing
+until a worker is running.
 
-## API
+## Try the API
 
-### Interactive API documentation
+### Interactive docs
 
-Open [http://127.0.0.1:5000/docs](http://127.0.0.1:5000/docs) while running
-locally, or visit the deployed [`/docs`](https://transaction-webhook-service-28y0.onrender.com/docs)
-page to try the health check, submit a webhook, and retrieve transaction status.
-The interactive page loads Swagger UI assets from a public CDN.
+With the app running locally, open <http://127.0.0.1:5000/docs>. To try the
+deployed API, open <https://transaction-webhook-service-28y0.onrender.com/docs>.
+Use the **Try it out** button in Swagger UI to send requests. The docs page
+loads its Swagger UI files from a public CDN.
+
+The OpenAPI description is also available at `/openapi.json`.
 
 ### Health check
 
-```http
-GET /
-```
-
-Example response:
+Send a `GET /` request. A healthy service responds with its status and current
+time:
 
 ```json
 {
@@ -108,14 +108,9 @@ Example response:
 }
 ```
 
-### Receive a transaction webhook
+### Submit a transaction
 
-```http
-POST /v1/webhooks/transactions
-Content-Type: application/json
-```
-
-Request body:
+Send a `POST /v1/webhooks/transactions` request with a JSON body:
 
 ```json
 {
@@ -127,7 +122,7 @@ Request body:
 }
 ```
 
-Example PowerShell request:
+For example, from PowerShell when the app is running locally:
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:5000/v1/webhooks/transactions `
@@ -135,7 +130,7 @@ curl.exe -X POST http://127.0.0.1:5000/v1/webhooks/transactions `
   -d '{"transaction_id":"txn_abc123def456","source_account":"acc_user_789","destination_account":"acc_merchant_456","amount":1500,"currency":"INR"}'
 ```
 
-A new transaction returns `202 Accepted`, for example:
+A new webhook responds with `202 Accepted`:
 
 ```json
 {
@@ -145,51 +140,37 @@ A new transaction returns `202 Accepted`, for example:
 }
 ```
 
-A repeat webhook for the same ID also returns `202 Accepted` and does not create
-a second job. Invalid input returns `400 Bad Request`; a database error returns
-`500 Internal Server Error`.
+Sending the same transaction ID again also returns `202`, without adding a
+duplicate job. Invalid input returns `400`. A database error returns `500`.
 
-### Retrieve transaction status
+### Check transaction status
+
+After submitting the webhook, send:
 
 ```http
 GET /v1/transactions/txn_abc123def456
 ```
 
-Example response:
+The response includes the transaction details, its status, and timestamps.
+`processed_at` is `null` while the transaction is still processing. Once the
+worker finishes, the status changes to `PROCESSED` and `processed_at` is set.
+The worker processes jobs in order, one at a time, and checks for new work
+every two seconds.
 
-```json
-{
-  "transaction_id": "txn_abc123def456",
-  "source_account": "acc_user_789",
-  "destination_account": "acc_merchant_456",
-  "amount": "1500.00",
-  "currency": "INR",
-  "status": "PROCESSING",
-  "created_at": "2026-10-25T07:00:00+00:00",
-  "processed_at": null
-}
-```
+## Check webhook response time
 
-After the worker completes the simulated processing, `status` becomes
-`PROCESSED` and `processed_at` contains the completion timestamp. The worker
-waits 30 seconds per job and polls for pending work every 2 seconds. Jobs are
-processed sequentially by each worker process.
-
-## Tests and timing checks
-
-Run the webhook timing script against the configured database:
+The timing script sends requests to the database configured in your `.env`
+file and prints each response time:
 
 ```powershell
 .\.venv\Scripts\python.exe .\test_webhook_timing.py
 ```
 
-It reports HTTP status and elapsed time for its sample transaction IDs. Those
-IDs may already exist in the database, in which case the script measures the
-duplicate-webhook path. Change the sample IDs in `test_webhook_timing.py` to
-measure a new-transaction request. The script sends real requests to the
-configured database.
+It uses the sample transaction IDs in the script. If those transactions are
+already in the database, it measures duplicate requests. To measure a new
+transaction, change the sample IDs first.
 
-Other database-backed diagnostic scripts:
+Other database checks are available:
 
 ```powershell
 .\.venv\Scripts\python.exe .\test_db_connection.py
@@ -197,47 +178,40 @@ Other database-backed diagnostic scripts:
 .\.venv\Scripts\python.exe .\test_worker_recovery.py
 ```
 
-`test_worker_recovery.py` creates a temporary database job and removes it after
-the check. These scripts require the database tables to exist.
+These scripts need the database tables to exist. The worker recovery check
+creates a test job and removes it when it finishes.
 
-## Technical choices
+## Why I used these tools
 
-- **Flask** provides a small HTTP API with straightforward endpoint handling.
-- **Flask-SQLAlchemy and SQLAlchemy** map transactions and jobs to PostgreSQL.
-- **PostgreSQL** provides persistent storage and an atomic `ON CONFLICT DO
-  NOTHING` insert for transaction idempotency.
-- **A separate polling worker** keeps the 30-second simulated processing delay
-  out of the webhook request path. It marks jobs as processing before the
-  delay, completes them afterward, and resets jobs that remain in processing
-  for more than five minutes so they can be retried.
+- **Flask** keeps the API simple and lightweight.
+- **Flask-SQLAlchemy and SQLAlchemy** handle the database models and queries.
+- **PostgreSQL** stores transactions and jobs. Its conflict handling helps
+  prevent duplicate transactions when webhook requests are repeated.
+- **A separate worker** keeps the 30-second simulated delay out of the API
+  request. It marks jobs as processing, completes them after the delay, and
+  makes old stuck jobs available for retry.
 
-## Deployment
+## Render deployment
 
-This service is deployed on Render and connected to the GitHub repository:
+The app is connected to GitHub and deployed as a Render web service. The
+current service runs the API, but it does **not** run the background worker.
+That means you can use `/docs` to test the endpoints and webhook requests can
+be saved, but transactions may stay `PROCESSING` until a worker is running.
 
-- **Public API:** <https://transaction-webhook-service-28y0.onrender.com/>
-- **Interactive API docs:** <https://transaction-webhook-service-28y0.onrender.com/docs>
-- **GitHub repository:** <https://github.com/RenukaMewada-2005/transaction-webhook-service>
-
-Check the deployment with `GET /` or submit a webhook to
-`POST /v1/webhooks/transactions` at the public API URL.
-
-The currently deployed Render service is a web service. It runs the API, but
-does not run the background worker. Therefore, webhook requests can be
-accepted and stored, but their status remains `PROCESSING` until a worker is
-running against the same PostgreSQL database. To complete transactions in
-production, deploy a separate worker service or run the worker on another
-always-on host. Configure the API service with this start command:
+To run the API as a Render web service, use this start command:
 
 ```bash
 gunicorn --bind 0.0.0.0:$PORT run:app
 ```
 
-When an always-on worker host is available, configure its start command as:
+The worker needs to run as a separate, always-on process and use the same
+PostgreSQL database. Its start command is:
 
 ```bash
 python -m app.worker
 ```
 
-Set `DATABASE_URL` in each service's Render environment settings. Keep database
-credentials private; do not commit them to the repository.
+If your Render plan does not include a background worker, you would need an
+always-on worker elsewhere to complete transactions. Set `DATABASE_URL` in
+the Render environment settings (and on the worker host). Keep database
+credentials private.
