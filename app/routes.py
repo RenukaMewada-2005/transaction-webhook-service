@@ -1,12 +1,13 @@
 
 from decimal import Decimal, InvalidOperation
 import logging
-import time
 from flask import Blueprint, request
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import literal, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.extensions import db
-from app.models import Transaction, TransactionJob
+from app.models import Transaction, TransactionJob, utc_now
 
 
 webhook_bp = Blueprint("webhook", __name__)
@@ -14,7 +15,6 @@ webhook_bp = Blueprint("webhook", __name__)
 
 @webhook_bp.post("/v1/webhooks/transactions")
 def receive_transaction():
-    request_started = time.perf_counter()
     data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
@@ -90,66 +90,62 @@ def receive_transaction():
             "error": "amount must be a positive number with at most 2 decimal places"
         }, 400
 
-    existing = db.session.get(Transaction, transaction_id)
-
-    if existing:
-        return {
-            "message": "Transaction already received",
-            "transaction_id": transaction_id,
-            "status": existing.status,
-        }, 202
-
-    transaction = Transaction(
-        transaction_id=transaction_id,
-        source_account=source_account,
-        destination_account=destination_account,
-        amount=amount,
-        currency=currency,
-        status="PROCESSING",
+    now = utc_now()
+    inserted_transaction = (
+        postgresql_insert(Transaction)
+        .values(
+            transaction_id=transaction_id,
+            source_account=source_account,
+            destination_account=destination_account,
+            amount=amount,
+            currency=currency,
+            status="PROCESSING",
+            created_at=now,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[Transaction.transaction_id]
+        )
+        .returning(Transaction.transaction_id)
+        .cte("inserted_transaction")
     )
-
-    job = TransactionJob(
-        transaction_id=transaction_id,
-        status="PENDING",
-        attempts=0,
+    insert_job = (
+        postgresql_insert(TransactionJob)
+        .from_select(
+            [
+                TransactionJob.transaction_id,
+                TransactionJob.status,
+                TransactionJob.attempts,
+                TransactionJob.created_at,
+                TransactionJob.updated_at,
+            ],
+            select(
+                inserted_transaction.c.transaction_id,
+                literal("PENDING"),
+                literal(0),
+                literal(now),
+                literal(now),
+            ),
+        )
+        .returning(TransactionJob.transaction_id)
     )
 
     try:
-        db.session.add(transaction)
-        db.session.add(job)
-        db.session.commit()
-        logging.warning(
-     "Webhook timing: save and commit took %.2f ms",
-    (time.perf_counter() - db_check_started) * 1000,
-)
-        logging.warning(
-    "Webhook timing: total before response took %.2f ms",
-    (time.perf_counter() - request_started) * 1000,
-)
-
-    except IntegrityError:
-        db.session.rollback()
-
-        # Another request may have inserted the same transaction concurrently.
-        existing = db.session.get(Transaction, transaction_id)
-        db_check_started = time.perf_counter()
-        logging.warning(
-    "Webhook timing: initial DB lookup took %.2f ms",
-    (time.perf_counter() - db_check_started) * 1000,
-)
-
-        if existing:
-            return {
-                "message": "Transaction already received",
-                "transaction_id": transaction_id,
-                "status": existing.status,
-            }, 202
-
+        with db.engine.connect() as connection:
+            connection = connection.execution_options(
+                isolation_level="AUTOCOMMIT"
+            )
+            inserted_id = connection.execute(
+                insert_job
+            ).scalar_one_or_none()
+    except SQLAlchemyError:
+        logging.exception("Could not save transaction webhook")
         return {"error": "Could not save transaction"}, 500
 
-    except Exception:
-        db.session.rollback()
-        return {"error": "Could not save transaction"}, 500
+    if inserted_id is None:
+        return {
+            "message": "Transaction already received",
+            "transaction_id": transaction_id,
+        }, 202
 
     return {
         "message": "Transaction accepted for processing",

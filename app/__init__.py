@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from flask import Flask
+from sqlalchemy import text
 
 from app.extensions import db
 
@@ -22,14 +23,18 @@ def create_app():
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "pool_pre_ping": True,
-    "pool_recycle": 300,
+        "pool_recycle": 300,
     }
 
     db.init_app(app)
 
     # Import models so SQLAlchemy registers their tables.
     from app import models  # noqa: F401
+
+    # Establish the database connection before the first webhook is received.
+    with app.app_context():
+        with db.engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
 
     # Register API routes.
     from app.routes import webhook_bp
